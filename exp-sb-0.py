@@ -15,14 +15,32 @@ import time
 
 setLogLevel('info')
 
+# MACHINES DEFINITION
+MIOTA1 = 'larsid02'
+MIOTA2 = 'larsid03'
+MCONNECTOR = 'larsid04'
+
+MGATEWAYS = ['larsid05', 'larsid06', 'larsid08', 'larsid09']
+
+MDEVICES = ['larsid10', 'larsid11', 'larsid12', 'larsid13']
+
+
+# EXPERIMENTS CONFIGURATION
 EXP_NUM = '0'
 EXP_TYPE = '0'
 EXP_LEVEL = '0'
-API_URL = 'https://{s}:8080/api/latency-records/records'
+API_URL = 'http://larsid23:8080/api/latency-records/records'
+
+MAX_QTD_DEVICE_PER_GATEWAYS = [32,32,0,0]
+QTD_MAX_DEVICES = sum(MAX_QTD_DEVICE_PER_GATEWAYS)
+QTD_DEVICES_PER_MACHINE = QTD_MAX_DEVICES // len(MAX_QTD_DEVICE_PER_GATEWAYS)
+LOAD_LIMIT = '16'
+MAX_QTD_GATEWAYS = len(MAX_QTD_DEVICE_PER_GATEWAYS)
 
 IS_BALANCEABLE = '0'
 IS_MULTI_LAYER = '0'
 
+# DEVICES CONFIGURATION
 COLLECT_TIME = '100'
 PUBLISH_TIME = '1000'
 SAMPLING_INTERVAL = '1000'
@@ -31,54 +49,16 @@ TIMEOUT_LB_REPLY = '10'
 TIMEOUT_GATEWAY = '10'
 BUFFER_SIZE = '64'
 
+# GATEWAY CONFIGURATION
 DEBUG_MODE_VALUE = 'true'
 INDEXES = 'LB_*'
 UP_DLT_URL = ''
-UP_DLT_PORT = ''
 UP_ZMQ_SOCKET_URL = ''
-UP_ZMQ_SOCKET_PORT = ''
 DU_DLT_URL = ''
-DU_DLT_PORT = ''
 DU_ZMQ_SOCKET_URL = ''
-DU_ZMQ_SOCKET_PORT = ''
 
-MIOTA1 = 'larsid01'
-MIOTA2 = 'larsid02'
-
-MCONNECTOR = 'larsid03'
-
-MGATEWAY1 = 'larsid04'
-MGATEWAY2 = 'larsid05'
-MGATEWAY3 = 'larsid06'
-MGATEWAY4 = 'larsid07'
-
-MGATEWAYS = [MGATEWAY1, MGATEWAY2, MGATEWAY3, MGATEWAY4]
-
-MDEVICE1 = 'larsid08'
-MDEVICE2 = 'larsid09'
-MDEVICE3 = 'larsid10'
-MDEVICE4 = 'larsid11'
-
-MDEVICES = [MDEVICE1, MDEVICE2, MDEVICE3, MDEVICE4]
-
-MEXP = 'localhost'
-
-QTD_MAX_DEVICES = 64
-QTD_DEVICES_PER_MACHINE = QTD_MAX_DEVICES // len(MGATEWAYS)
-LOAD_LIMIT = '16'
-MAX_QTD_DEVICE_PER_GATEWAYS = [32,32,0,0]
-MAX_QTD_GATEWAYS = 4
-
-def ip_generator():
-    ip_parts = list(map(int, "10.0.0.1".split('.')))
-    
-    for i in range(1000):
-        yield '.'.join(map(str, ip_parts))
-        for j in range(3, -1, -1):
-            if ip_parts[j] < 255:
-                ip_parts[j] += 1
-                break
-            ip_parts[j] = 0
+UP_DLT_PORT = DU_DLT_PORT = '14265'
+UP_ZMQ_SOCKET_PORT = DU_ZMQ_SOCKET_PORT = '5556'
 
 def createFotDevice(name: str, config: dict):
     return Container(
@@ -126,7 +106,7 @@ def createFotGatway(name: str, config: dict, mqtt_port: str = '1883'):
 
 def create_connector():
     hornet_connector = Container(
-        name='hornet_connector',
+        name='connector',
         dimage='udamasceno/hornet-connector:latest',
         environment={
             'DEBUG_MODE_VALUE': DEBUG_MODE_VALUE,
@@ -142,15 +122,16 @@ def create_connector():
     )
     return hornet_connector
 
-def create_zmq_bridge(iota_ip: str, indexes: str, port: str = '5556'):
+def create_zmq_bridge(iota_ip: str, suffix:str, indexes: str, port: str = '5556'):
     return Container(
-        name='zmq/'+iota_ip,
+        name=f'zmq-{suffix}',
         dimage='larsid/iota-zmq-bridge:1.0.0',
         dcmd=f'/entrypoint.sh',
         port_bindings={'5556': port},
         environment={
             'MQTT_IP': iota_ip,
-            'INDEXES': indexes
+            'INDEXES': indexes,
+            'NUM_WORKERS': 20
         }
     )
 
@@ -162,72 +143,58 @@ if (__name__ == '__main__'):
         controller_ip='localhost',
         controller_port=6633)
 
-    iota1_nodes = [NodeConfig(name='node0', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})]
-    iota1 = IotaBasic(exp=exp, prefix='iota1', conf_nodes=iota1_nodes)
-    iota1.name = 'i1'
-    iota1.ip = MIOTA1
-    UP_DLT_URL = iota1.containers['node0'].ip
-    zmq1_bridge = create_zmq_bridge(UP_DLT_URL, INDEXES, UP_ZMQ_SOCKET_PORT)
+### IOTA1 CONFIGURATION
+    iota1_nodes = NodeConfig(name='i1-node0', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})
     iota1_virtual = exp.add_virtual_instance('iota1')
+    iota1 = IotaBasic(exp=exp, prefix='iota1', virtual_instance=iota1_virtual, conf_nodes=[iota1_nodes])
+    UP_DLT_URL = iota1.containers['i1-node0'].ip
 
+    zmq1_bridge = create_zmq_bridge(UP_DLT_URL, 'i1', INDEXES, UP_ZMQ_SOCKET_PORT)
     UP_ZMQ_SOCKET_URL = zmq1_bridge.ip
-    exp.add_docker(iota1, iota1_virtual)
     exp.add_docker(zmq1_bridge, iota1_virtual)
 
     iota1_worker = exp.add_worker(ip=MIOTA1, controller=Controller('localhost', 6633))
     iota1_worker.add(iota1_virtual, reachable=True)
 
-    iota2_nodes = [NodeConfig(name='node1', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})]
-    iota2 = IotaBasic(exp=exp, prefix='iota2', conf_nodes=iota2_nodes)
-    iota2.name = 'i2'
-    iota2.ip = MIOTA2
-    DU_DLT_URL = iota2.containers['node1'].ip
-    zmq2_bridge = create_zmq_bridge(DU_DLT_URL, INDEXES, DU_ZMQ_SOCKET_PORT)
+### IOTA2 CONFIGURATION
+    iota2_nodes = NodeConfig(name='i2-node0', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})
     iota2_virtual = exp.add_virtual_instance('iota2')
-    DU_ZMQ_SOCKET_URL = zmq2_bridge.ip
+    iota2 = IotaBasic(exp=exp, prefix='iota2', virtual_instance=iota2_virtual,  conf_nodes=[iota2_nodes])
+    DU_DLT_URL = iota2.containers['i2-node0'].ip
 
-    exp.add_docker(iota2, iota2_virtual)
-    exp.add_docker(zmq2_bridge, iota2_virtual)   
-    iota2_worker = exp.add_worker(ip=MIOTA2, controller=Controller('localhost', 6633))
+    zmq2_bridge = create_zmq_bridge(DU_DLT_URL, 'i2', INDEXES, DU_ZMQ_SOCKET_PORT)
+    DU_ZMQ_SOCKET_URL = zmq2_bridge.ip
+    exp.add_docker(zmq2_bridge, iota2_virtual)
+
+    iota2_worker = exp.add_worker(ip=MIOTA2, controller=Controller('localhost', 6633))  
     iota2_worker.add(iota2_virtual, reachable=True)
 
-    iota_workers = [iota1_worker, iota2_worker]
 
-    exp.add
-
-### Connector
+### CONNECTOR CONFIGURATION 
 
     connector = create_connector()
+
     connector_virtual = exp.add_virtual_instance('connector')
     exp.add_docker(connector, connector_virtual)
-
     connector_worker = exp.add_worker(ip=MCONNECTOR, controller=Controller('localhost', 6633))
-
-    exp.add_tunnel(iota1_worker, connector_worker)
-    exp.add_tunnel(iota2_worker, connector_worker)
-
-    UP_DLT_PORT = DU_DLT_PORT = '14265'
-    UP_ZMQ_SOCKET_PORT = DU_ZMQ_SOCKET_PORT = '5556'
-
+    connector_worker.add(connector_virtual, reachable=True)
+   
+### GATEWAYS CONFIGURATION
     gateways = []
-    gateway_name = ''
-
-    mqtt_port = '188'
+    gateways_virtual = []
+    gateways_workers = [exp.add_worker(ip=worker, controller=Controller('localhost', 6633)) for worker in MGATEWAYS]
 
     for i in range(MAX_QTD_GATEWAYS):
         dlt_url = UP_DLT_URL if i % 2 == 0 else DU_DLT_URL
-        dlt_port = UP_DLT_PORT if i % 2 == 0 else DU_DLT_PORT
-
         zmq_socket_url = UP_ZMQ_SOCKET_URL if i % 2 == 0 else DU_ZMQ_SOCKET_URL
-        zmq_socket_port = UP_ZMQ_SOCKET_PORT if i % 2 == 0 else DU_ZMQ_SOCKET_PORT
-        group = ('iota/i1' if i % 2 == 0 else 'iota/i2')
+        gname = f'gateway-{i}'
 
-        gateway = createFotGatway(f'gateway{i}', {
+        gateway = createFotGatway(gname, {
                         'dlt_url': dlt_url,
-                        'dlt_port': dlt_port,
+                        'dlt_port': '14265',
                         'zmq_socket_url': zmq_socket_url,
-                        'zmq_socket_port': zmq_socket_port,
-                        'group': group,
+                        'zmq_socket_port': '5556',
+                        'group': f'iota/i{(i % 2)+1}',
                         'sampling_interval': SAMPLING_INTERVAL,
                         'load_limit': LOAD_LIMIT,
                         'lb_entry_timeout': LB_ENTRY_TIMEOUT,
@@ -237,20 +204,33 @@ if (__name__ == '__main__'):
                         'publish_time': PUBLISH_TIME,
                         'is_balanceable': IS_BALANCEABLE,
                         'is_multi_layer': IS_MULTI_LAYER,
-        }, mqtt_port+str(i))
-        gateway.switch = f'gateway-{i}'
+        }, f'188{i}')
+        gateway.switch = f'sw-{gname}'
         gateways.append(gateway)
 
 
+        gateway_virtual = exp.add_virtual_instance(f'v-{gname}')
+        gateways_virtual.append(gateways_virtual)
 
+        exp.add_docker(gateway, gateway_virtual)
+        print(f'Adding gateway {gateway.ip} on {gateway_virtual.label}')
+
+    for indice, gvirtual in enumerate(gateways_virtual):
+        worker = gateways_workers[indice % len(gateways_workers)]
+        worker.add(gvirtual, reachable=True)
+        print(f'Adding gateway {gvirtual.label} to worker {worker.ip}')
+
+### DEVICES CONFIGURATION
     devices = []
-    for gateway, limit in zip(gateways, MAX_QTD_DEVICE_PER_GATEWAYS):
-        print(f'Creating {limit} devices for gateway {gateway.ip}.')
-        for i in range(limit):
+
+    for qtd_allowed in MAX_QTD_DEVICE_PER_GATEWAYS:
+        if(qtd_allowed == 0):
+            continue
+        for i in range(qtd_allowed):
             print(f'Creating device:{i}')
             device = createFotDevice(f'device-{i}', {
-                'broker_ip': gateway.ip,
-                'port': gateway.bindings['1883'],
+                'broker_ip': gateways[i].ip,
+                'port': gateways[i].bindings['1883'],
                 'username': 'karaf',
                 'password': 'karaf',
                 'exp_num': EXP_NUM,
@@ -260,45 +240,29 @@ if (__name__ == '__main__'):
                 'buffer_size': BUFFER_SIZE
             })
             devices.append(device)
-
-    gateways_virtual = []
-    for i in range(len(MAX_QTD_DEVICE_PER_GATEWAYS)):
-        gateways_virtual.append(exp.add_virtual_instance(f'gateway-{i}'))
-
-    for gateway, virtual in zip(gateways, gateways_virtual):
-        exp.add_docker(gateway, virtual)
-
-    gateway1_worker = exp.add_worker(ip=MGATEWAY1, controller=Controller('localhost', 6633))
-    gateway2_worker = exp.add_worker(ip=MGATEWAY2, controller=Controller('localhost', 6633))
-    gateway3_worker = exp.add_worker(ip=MGATEWAY3, controller=Controller('localhost', 6633))
-    gateway4_worker = exp.add_worker(ip=MGATEWAY4, controller=Controller('localhost', 6633))
-
-    gateways_workers = [gateway1_worker, gateway2_worker, gateway3_worker, gateway4_worker]
-
-    for indice, gateway in enumerate(gateways_virtual):
-        worker = gateways_workers[indice % 4]
-        worker.add(gateway, reachable=True)
-        print(f'Adding gateway {gateway.label} to worker {worker.ip}')
-
-    device1_worker = exp.add_worker(ip=MDEVICE1, controller=Controller('localhost', 6633))
-    device2_worker = exp.add_worker(ip=MDEVICE2, controller=Controller('localhost', 6633))
-    device3_worker = exp.add_worker(ip=MDEVICE3, controller=Controller('localhost', 6633))
-    device4_worker = exp.add_worker(ip=MDEVICE4, controller=Controller('localhost', 6633))
-
-    devices_workers = [device1_worker, device2_worker, device3_worker, device4_worker]
+  
+    devices_workers = []
     devices_virtual = []
+    for i, worker in enumerate(MDEVICES):
+        devices_workers.append(exp.add_worker(ip=worker, controller=Controller('localhost', 6633)))
+        devices_virtual.append(exp.add_virtual_instance(f'v-devices-{i}'))
+    
 
-    for i in range(len(MDEVICES)):
-        devices_virtual.append(exp.add_virtual_instance(f'devices-{i}'))
+    for i, device in enumerate(devices):
+        vdevice = devices_virtual[i % len(devices_virtual)]
+        vdevice.add(device)
+        print(f'Adding device {device.ip} on {vdevice.label}')
 
-    for device, virtual in zip(devices, devices_virtual):
-        exp.add_docker(device, virtual)
-        print(f'Adding device {device.ip} on {virtual.label}')
-
-    for indice, device in enumerate(devices_virtual):
+    for indice, vdevice in enumerate(devices_virtual):
         worker = devices_workers[indice % len(devices_workers)]
-        worker.add(device, reachable=True)
-        #print(f'Adding device {device.environment['DEVICE_ID']} to worker {worker.ip}')
+        worker.add(vdevice, reachable=True)
+        print(f'Adding virtual instance for device {vdevice.label} to worker {worker.ip}')
+
+### TUNNEL CONFIGURATION
+    iota_workers = [iota1_worker, iota2_worker]
+
+    for iota_worker in iota_workers:
+        exp.add_tunnel(iota_worker, connector_worker)
 
     for iota_worker in iota_workers:
         for gateway_worker in gateways_workers:
@@ -311,15 +275,15 @@ if (__name__ == '__main__'):
     try:
         print("Experiment started")
         exp.start()
+        print("Starting iota1")
         iota1.start_network()
+        print("Starting iota2")
         iota2.start_network()
+        print("Iotas started")
 
         start_time = datetime.now()
 
-        while datetime.now() - start_time < timedelta(minutes=10):
-            time_remaining = timedelta(minutes=10) - (datetime.now() - start_time)
-            print(f"Time reaming: {time_remaining}")
-
+        input("press any key to stop experiment")
         print("Stopping the experiment...")
         exp.stop()
     except Exception as ex:
