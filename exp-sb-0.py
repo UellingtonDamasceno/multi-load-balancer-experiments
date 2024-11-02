@@ -6,7 +6,8 @@ from fogledgerIota.iota.config.ApiConfig import (ApiConfig)
 from fogledgerIota.iota.config.WebAppConfig import (WebAppConfig)
 from typing import List
 from fogbed import (
-    VirtualInstance, setLogLevel, FogbedDistributedExperiment, Worker, Container, Controller
+    VirtualInstance, setLogLevel, FogbedDistributedExperiment, Worker, Container, Controller,
+    HardwareResources, Resources
 )
 import signal
 from datetime import datetime, timedelta
@@ -20,9 +21,9 @@ MIOTA1 = 'larsid02'
 MIOTA2 = 'larsid03'
 MCONNECTOR = 'larsid04'
 
-MGATEWAYS = ['larsid05', 'larsid06', 'larsid08', 'larsid09']
+MGATEWAYS = ['larsid05', 'larsid10', 'larsid08', 'larsid09']
 
-MDEVICES = ['larsid10', 'larsid11', 'larsid12', 'larsid13']
+MDEVICES = ['larsid14', 'larsid11', 'larsid12', 'larsid13']
 
 
 # EXPERIMENTS CONFIGURATION
@@ -60,9 +61,32 @@ DU_ZMQ_SOCKET_URL = ''
 UP_DLT_PORT = DU_DLT_PORT = '14265'
 UP_ZMQ_SOCKET_PORT = DU_ZMQ_SOCKET_PORT = '5556'
 
-def createFotDevice(name: str, config: dict):
-    return Container(
+class IPGen:
+    current = 1 
+
+    @staticmethod
+    def next_ip():
+        if IPGen.current > 256:
+            raise StopIteration("Todos os IPs válidos foram gerados.")
+        ip = f"172.17.0.{IPGen.current}"
+        IPGen.current += 1
+        return ip
+
+def conStr(container: Container) -> str:
+    env_str = ', '.join(f"{key}: {value}" for key, value in container.environment.items())
+    port_bindings_str = ', '.join(f"{host_port} -> {container.bindings[host_port]}" for host_port in container.bindings)
+
+    return (f"Name: {container.name}, "
+            f"IP: {container.ip if container.ip else 'N/A'}, "
+            f"Port: {{{port_bindings_str}}}, "
+            f"Env: {{{env_str}}}, "
+            f"Resources: {container.resources}")
+
+def createFotDevice(name: str, ip: str,  config: dict):
+    device = Container(
         name=name,
+        dcmd='java -jar device.jar',
+ #       ip=ip,
         dimage='udamasceno/virtual-fot-device:latest',
         environment={
             'DEVICE_ID': name,
@@ -75,12 +99,18 @@ def createFotDevice(name: str, config: dict):
             'EXP_LEVEL': config['exp_level'],
             'API_URL': config['api_url'],
             'BUFFER_SIZE': config['buffer_size']
-        }
+        },
+        resources=HardwareResources(16.0, 4096)
     )
+    print(conStr(device))
+    return device
 
-def createFotGatway(name: str, config: dict, mqtt_port: str = '1883'):
-    return Container(
+def createFotGatway(name: str, ip: str,  config: dict, mqtt_port: str = '1883'):
+    gateway = Container(
         name=name,
+  #      ip=ip,
+#        dimage='larsid/load-balancer:latest',
+        dcmd='/bin/bash ./usr/local/bin/karaf-init.sh',
         dimage='udamasceno/mlb:latest', 
         environment={
             'DEBUG_MODE_VALUE': DEBUG_MODE_VALUE,
@@ -100,31 +130,37 @@ def createFotGatway(name: str, config: dict, mqtt_port: str = '1883'):
             'IS_MULTI_LAYER': config['is_multi_layer'],
             'GATEWAY_PORT': mqtt_port
         },
-        port_bindings={'8081': '8081', '14265': '14265', '1883': mqtt_port}
+        port_bindings={'8081': '8081', '14265': '14265', '1883': mqtt_port},
+        resources=HardwareResources(cu=12.0, mu=8192)
     )
-
+    print(conStr(gateway))
+    return gateway
 
 def create_connector():
     hornet_connector = Container(
         name='connector',
+        dcmd='java -jar hornet-connector.jar',
         dimage='udamasceno/hornet-connector:latest',
         environment={
             'DEBUG_MODE_VALUE': DEBUG_MODE_VALUE,
-            'UP_DLT_URL': UP_DLT_URL,
-            'UP_DLT_PORT': UP_DLT_PORT,
-            'UP_ZMQ_SOCKET_URL': UP_ZMQ_SOCKET_URL,
-            'UP_ZMQ_SOCKET_PORT': UP_ZMQ_SOCKET_PORT,
+            'UD_DLT_URL': UP_DLT_URL,
+            'UD_DLT_PORT': UP_DLT_PORT,
+            'UD_ZMQ_URL': UP_ZMQ_SOCKET_URL,
+            'UD_ZMQ_PORT': UP_ZMQ_SOCKET_PORT,
             'DU_DLT_URL': DU_DLT_URL,
             'DU_DLT_PORT': DU_DLT_PORT,
-            'DU_ZMQ_SOCKET_URL': DU_ZMQ_SOCKET_URL,
-            'DU_ZMQ_SOCKET_PORT': DU_ZMQ_SOCKET_PORT,
-        }
+            'DU_ZMQ_URL': DU_ZMQ_SOCKET_URL,
+            'DU_ZMQ_PORT': DU_ZMQ_SOCKET_PORT,
+        },
+        resources=HardwareResources(cu=12.0, mu=8192)
     )
+    print(conStr(hornet_connector))
     return hornet_connector
 
-def create_zmq_bridge(iota_ip: str, suffix:str, indexes: str, port: str = '5556'):
-    return Container(
+def create_zmq_bridge(iota_ip: str, zmq_ip: str, suffix:str, indexes: str, port: str = '5556'):
+    zmq = Container(
         name=f'zmq-{suffix}',
+    #    ip=zmq_ip,
         dimage='larsid/iota-zmq-bridge:1.0.0',
         dcmd=f'/entrypoint.sh',
         port_bindings={'5556': port},
@@ -132,41 +168,79 @@ def create_zmq_bridge(iota_ip: str, suffix:str, indexes: str, port: str = '5556'
             'MQTT_IP': iota_ip,
             'INDEXES': indexes,
             'NUM_WORKERS': 20
-        }
+        },
+        resources=HardwareResources(12.0, 8192)
     )
+    print(conStr(zmq))
+    return zmq
 
 setLogLevel('info')
 
 if (__name__ == '__main__'):
 
-    exp = FogbedDistributedExperiment(
-        controller_ip='localhost',
-        controller_port=6633)
+    controller = Controller('localhost', 6633)
+
+    print(controller)
+#    exp = FogbedDistributedExperiment(
+#        max_cpu=16,
+#        max_memory=12288,
+#        controller_ip=controller.ip,
+#        controller_port=controller.port)
+    exp = FogbedDistributedExperiment()
 
 ### IOTA1 CONFIGURATION
-    iota1_nodes = NodeConfig(name='i1-node0', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})
-    iota1_virtual = exp.add_virtual_instance('iota1')
-    iota1 = IotaBasic(exp=exp, prefix='iota1', virtual_instance=iota1_virtual, conf_nodes=[iota1_nodes])
-    UP_DLT_URL = iota1.containers['i1-node0'].ip
+    iota1_nodes = [
+    NodeConfig(
+        name=f'i1-node{i}',
+#        ip=IPGen.next_ip(),
+        port_bindings={
+            '8081': str(808 + i),
+            '14256': str(1426 + i),
+            '1883': str(188 + i)
+        }
+    )
+    for i in range(4)
+    ]
 
-    zmq1_bridge = create_zmq_bridge(UP_DLT_URL, 'i1', INDEXES, UP_ZMQ_SOCKET_PORT)
+    iota1_virtual = exp.add_virtual_instance('iota1')
+    iota1 = IotaBasic(exp=exp, prefix='iota1', virtual_instance=iota1_virtual, conf_nodes=iota1_nodes)
+    node1 = iota1.containers['i1-node0']
+    node1.resources = HardwareResources(cu=12.0, mu=8192) 
+    UP_DLT_URL = node1.ip
+    print(conStr(node1))
+
+    zmq1_bridge = create_zmq_bridge(UP_DLT_URL, IPGen.next_ip(),  'i1', INDEXES, UP_ZMQ_SOCKET_PORT)
     UP_ZMQ_SOCKET_URL = zmq1_bridge.ip
     exp.add_docker(zmq1_bridge, iota1_virtual)
 
-    iota1_worker = exp.add_worker(ip=MIOTA1, controller=Controller('localhost', 6633))
+    iota1_worker = exp.add_worker(MIOTA1)
     iota1_worker.add(iota1_virtual, reachable=True)
 
 ### IOTA2 CONFIGURATION
-    iota2_nodes = NodeConfig(name='i2-node0', port_bindings={'8081': '8081', '14265': '14265', '1883': '1883'})
+    iota2_nodes = [
+    NodeConfig(
+        name=f'i2-node{i}',
+   #     ip=IPGen.next_ip(),
+        port_bindings={
+            '8081': str(808 + i),
+            '14265': str(1426 + i),
+            '1883': str(188 + i)
+        }
+    )
+    for i in range(4)
+    ]
     iota2_virtual = exp.add_virtual_instance('iota2')
-    iota2 = IotaBasic(exp=exp, prefix='iota2', virtual_instance=iota2_virtual,  conf_nodes=[iota2_nodes])
-    DU_DLT_URL = iota2.containers['i2-node0'].ip
+    iota2 = IotaBasic(exp=exp, prefix='iota2', virtual_instance=iota2_virtual,  conf_nodes=iota2_nodes)
+    node2 = iota2.containers['i2-node0']
+    node2.resources = HardwareResources(12.0, 8192)
+    DU_DLT_URL = node2.ip
+    print(conStr(node2))
 
-    zmq2_bridge = create_zmq_bridge(DU_DLT_URL, 'i2', INDEXES, DU_ZMQ_SOCKET_PORT)
+    zmq2_bridge = create_zmq_bridge(DU_DLT_URL, IPGen.next_ip(), 'i2', INDEXES, DU_ZMQ_SOCKET_PORT)
     DU_ZMQ_SOCKET_URL = zmq2_bridge.ip
     exp.add_docker(zmq2_bridge, iota2_virtual)
 
-    iota2_worker = exp.add_worker(ip=MIOTA2, controller=Controller('localhost', 6633))  
+    iota2_worker = exp.add_worker(MIOTA2)
     iota2_worker.add(iota2_virtual, reachable=True)
 
 
@@ -176,20 +250,20 @@ if (__name__ == '__main__'):
 
     connector_virtual = exp.add_virtual_instance('connector')
     exp.add_docker(connector, connector_virtual)
-    connector_worker = exp.add_worker(ip=MCONNECTOR, controller=Controller('localhost', 6633))
+    connector_worker = exp.add_worker(MCONNECTOR)
     connector_worker.add(connector_virtual, reachable=True)
-   
+ 
 ### GATEWAYS CONFIGURATION
     gateways = []
     gateways_virtual = []
-    gateways_workers = [exp.add_worker(ip=worker, controller=Controller('localhost', 6633)) for worker in MGATEWAYS]
+    gateways_workers = [exp.add_worker(worker) for worker in MGATEWAYS]
 
     for i in range(MAX_QTD_GATEWAYS):
         dlt_url = UP_DLT_URL if i % 2 == 0 else DU_DLT_URL
         zmq_socket_url = UP_ZMQ_SOCKET_URL if i % 2 == 0 else DU_ZMQ_SOCKET_URL
         gname = f'gateway-{i}'
 
-        gateway = createFotGatway(gname, {
+        gateway = createFotGatway(gname, IPGen.next_ip(), {
                         'dlt_url': dlt_url,
                         'dlt_port': '14265',
                         'zmq_socket_url': zmq_socket_url,
@@ -205,12 +279,10 @@ if (__name__ == '__main__'):
                         'is_balanceable': IS_BALANCEABLE,
                         'is_multi_layer': IS_MULTI_LAYER,
         }, f'188{i}')
-        gateway.switch = f'sw-{gname}'
+ #       gateway.switch = f'sw-{gname}'
         gateways.append(gateway)
-
-
         gateway_virtual = exp.add_virtual_instance(f'v-{gname}')
-        gateways_virtual.append(gateways_virtual)
+        gateways_virtual.append(gateway_virtual)
 
         exp.add_docker(gateway, gateway_virtual)
         print(f'Adding gateway {gateway.ip} on {gateway_virtual.label}')
@@ -222,15 +294,19 @@ if (__name__ == '__main__'):
 
 ### DEVICES CONFIGURATION
     devices = []
-
+    current_gateway = 0
+    device_count = 0
     for qtd_allowed in MAX_QTD_DEVICE_PER_GATEWAYS:
         if(qtd_allowed == 0):
+            current_gateway += 0
             continue
+        gateway = gateways[current_gateway]
+        current_gateway += 1
         for i in range(qtd_allowed):
-            print(f'Creating device:{i}')
-            device = createFotDevice(f'device-{i}', {
-                'broker_ip': gateways[i].ip,
-                'port': gateways[i].bindings['1883'],
+            print(f'Creating device:{i} at gateway {gateway.name}')
+            device = createFotDevice(f'device-{device_count}', IPGen.next_ip(), {
+                'broker_ip': gateway.ip,
+                'port': gateway.bindings['1883'],
                 'username': 'karaf',
                 'password': 'karaf',
                 'exp_num': EXP_NUM,
@@ -240,18 +316,19 @@ if (__name__ == '__main__'):
                 'buffer_size': BUFFER_SIZE
             })
             devices.append(device)
+            device_count += 1
   
     devices_workers = []
     devices_virtual = []
     for i, worker in enumerate(MDEVICES):
-        devices_workers.append(exp.add_worker(ip=worker, controller=Controller('localhost', 6633)))
+        devices_workers.append(exp.add_worker(worker))
         devices_virtual.append(exp.add_virtual_instance(f'v-devices-{i}'))
     
 
     for i, device in enumerate(devices):
         vdevice = devices_virtual[i % len(devices_virtual)]
-        vdevice.add(device)
-        print(f'Adding device {device.ip} on {vdevice.label}')
+        exp.add_docker(device, vdevice)
+        print(f'Adding device {device.name} on {vdevice.label}')
 
     for indice, vdevice in enumerate(devices_virtual):
         worker = devices_workers[indice % len(devices_workers)]
